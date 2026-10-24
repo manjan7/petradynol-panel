@@ -11,7 +11,11 @@ Workflow: `.github/workflows/petradynol-panel.yml`
 
 ## Required secrets / variables
 - Secret `RCLONE_CONFIG_B64`: base64-encoded rclone config with a Google Drive
-  remote named (by default) `gdrive`.
+  remote named (by default) `gdrive`. Generate locally:
+  ```
+  rclone config          # create remote named gdrive
+  base64 -w0 ~/.config/rclone/rclone.conf | gh secret set RCLONE_CONFIG_B64 --repo manjan7/petradynol-panel
+  ```
 - Variables (optional, defaults shown):
   - `PANEL_START_CMD` (default `./petradynol-panel`)
   - `PANEL_PORT` (default `3000`)

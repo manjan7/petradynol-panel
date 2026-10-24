@@ -34,6 +34,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Prepare log file
+        run: touch panel.log
+
       - name: Install rclone
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
@@ -45,7 +48,7 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           if [ -z "$RCLONE_CONFIG_B64" ]; then
-            echo "::error::RCLONE_CONFIG_B64 secret is required"
+            echo "::error::RCLONE_CONFIG_B64 secret is required. Generate with: rclone config -> then 'base64 -w0 ~/.config/rclone/rclone.conf'"
             exit 1
           fi
           echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
@@ -109,4 +112,5 @@ jobs:
           name: petradynol-logs-${{ github.run_id }}
           path: |
             panel.log
+          if-no-files-found: ignore
           retention-days: 3
