@@ -60,6 +60,7 @@ jobs:
       - name: Pull live database from Drive
         run: |
           mkdir -p "$DB_DIR"
+          rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
           rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose
 
       - name: Check if server is running
@@ -92,6 +93,7 @@ jobs:
           END=$((SECONDS + 290*60))
           while [ $SECONDS -lt $END ]; do
             sleep 60
+            rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
             rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
             if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
               echo "Server died; restarting panel..."
@@ -103,6 +105,7 @@ jobs:
       - name: Final DB sync to Drive
         if: always()
         run: |
+          rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
           rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
 
       - name: Upload logs
