@@ -1,0 +1,112 @@
+name: Petradynol Panel Keep-Alive
+
+# Auto-runs the Petradynol panel on a schedule, using Google Drive as the live DB.
+# Each run is hard-capped at 5 hours; the next queued run takes over ~2 minutes later.
+
+on:
+  schedule:
+    # Every 5 hours at minute 2 (UTC).
+    - cron: '2 */5 * * *'
+  workflow_dispatch:
+
+# Never overlap two panel runs: a newly triggered run waits for the previous one
+# to finish, so the Drive DB is never written concurrently and the 2-minute
+# gap between stop and (re)start is preserved.
+concurrency:
+  group: petradynol-panel
+  cancel-in-progress: false
+
+jobs:
+  panel:
+    name: Run Petradynol Panel
+    runs-on: ubuntu-latest
+    # Strict 5-hour cap for every workflow run.
+    timeout-minutes: 300
+
+    env:
+      PANEL_PORT: ${{ vars.PANEL_PORT || '3000' }}
+      PANEL_START_CMD: ${{ vars.PANEL_START_CMD || './petradynol-panel' }}
+      SERVER_HEALTH_URL: ${{ vars.SERVER_HEALTH_URL || 'http://localhost:3000/health' }}
+      DRIVE_REMOTE: ${{ vars.DRIVE_REMOTE || 'gdrive:petradynol' }}
+      DB_DIR: ${{ vars.DB_DIR || './data' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone (Google Drive)
+        env:
+          RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_B64 }}
+        run: |
+          mkdir -p ~/.config/rclone
+          if [ -z "$RCLONE_CONFIG_B64" ]; then
+            echo "::error::RCLONE_CONFIG_B64 secret is required"
+            exit 1
+          fi
+          echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
+
+      # 2-minute gap after the previous run stopped before starting a new one.
+      - name: Wait 2 minutes (gap after previous run)
+        run: sleep 120
+
+      - name: Pull live database from Drive
+        run: |
+          mkdir -p "$DB_DIR"
+          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose
+
+      - name: Check if server is running
+        id: server_check
+        run: |
+          if curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
+            echo "running=true" >> "$GITHUB_OUTPUT"
+            echo "Server is already running."
+          else
+            echo "running=false" >> "$GITHUB_OUTPUT"
+            echo "Server is NOT running; will (re)start."
+          fi
+
+      - name: Start Petradynol panel + server
+        run: |
+          if [ -f "$PANEL_START_CMD" ]; then chmod +x "$PANEL_START_CMD"; fi
+          nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
+          echo "PANEL_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 5 "$SERVER_HEALTH_URL" >/dev/null; then
+              echo "Panel is up."
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Keep panel alive (sync DB to Drive every minute)
+        run: |
+          # Run for ~290 min, leaving room for the 2-min gap sleep + startup.
+          END=$((SECONDS + 290*60))
+          while [ $SECONDS -lt $END ]; do
+            sleep 60
+            rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
+            if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
+              echo "Server died; restarting panel..."
+              nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
+              sleep 15
+            fi
+          done
+
+      - name: Final DB sync to Drive
+        if: always()
+        run: |
+          rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: petradynol-logs-${{ github.run_id }}
+          path: |
+            panel.log
+          retention-days: 3
