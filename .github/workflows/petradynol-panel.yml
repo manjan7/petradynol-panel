@@ -1,17 +1,15 @@
 name: Petradynol Panel Keep-Alive
 
-# Auto-runs the Petradynol panel on a schedule, using Google Drive as the live DB.
-# Each run is hard-capped at 5 hours; the next queued run takes over ~2 minutes later.
+# Runs the Petradynol panel on a GitHub Actions runner.
+# Drive is used as the database: pull on start, push every minute,
+# and a final full backup ~15 min before the 5-hour cap so the next
+# run can resume from the saved state.
 
 on:
   schedule:
-    # Every 5 hours at minute 2 (UTC).
     - cron: '2 */5 * * *'
   workflow_dispatch:
 
-# Never overlap two panel runs: a newly triggered run waits for the previous one
-# to finish, so the Drive DB is never written concurrently and the 2-minute
-# gap between stop and (re)start is preserved.
 concurrency:
   group: petradynol-panel
   cancel-in-progress: false
@@ -54,7 +52,7 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           if [ -z "$RCLONE_CONFIG_B64" ]; then
-            echo "::error::RCLONE_CONFIG_B64 secret is required. Generate with: rclone config -> then 'base64 -w0 ~/.config/rclone/rclone.conf'"
+            echo "::error::RCLONE_CONFIG_B64 secret is required."
             exit 1
           fi
           echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
@@ -63,31 +61,38 @@ jobs:
       - name: Wait 2 minutes (gap after previous run)
         run: sleep 120
 
-      - name: Pull live database from Drive
+      - name: Check Drive for existing backup
         run: |
           mkdir -p "$DB_DIR"
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose --timeout 120s --contimeout 30s --retries 2
+          if rclone ls "$DRIVE_REMOTE/db" 2>/dev/null | grep -q .; then
+            echo "BACKUP FOUND on Drive -> will restore."
+            echo "HAS_BACKUP=true" >> "$GITHUB_ENV"
+          else
+            echo "NO BACKUP on Drive -> fresh start."
+            echo "HAS_BACKUP=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Pull database from Drive (restore if backup exists)
+        run: |
+          mkdir -p "$DB_DIR"
+          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose --timeout 120s --contimeout 30s --retries 2 || true
+          echo "Restored from Drive. DB_DIR contents:"
+          ls -la "$DB_DIR" || true
 
       - name: Check if server is running
         id: server_check
         run: |
           if curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
             echo "running=true" >> "$GITHUB_OUTPUT"
-            echo "Server is already running."
           else
             echo "running=false" >> "$GITHUB_OUTPUT"
-            echo "Server is NOT running; will (re)start."
           fi
 
       - name: Start Petradynol panel + server
         timeout-minutes: 2
         run: |
-          if [ -f "$PANEL_START_CMD" ]; then
-            chmod +x "$PANEL_START_CMD"
-          else
-            echo "WARNING: $PANEL_START_CMD not found; panel will not start. Set PANEL_START_CMD to your panel binary."
-          fi
+          if [ -f "$PANEL_START_CMD" ]; then chmod +x "$PANEL_START_CMD"; fi
           nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
           echo "PANEL_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 12); do
@@ -113,18 +118,16 @@ jobs:
             fi
             sleep 2
           done
-          if [ -z "$URL" ]; then
-            echo "Tunnel URL not found yet; cloudflared.log:"
-            cat cloudflared.log || true
-          fi
 
       - name: Keep panel alive (sync DB to Drive every minute)
-        timeout-minutes: 295
+        timeout-minutes: 280
         run: |
-          # Run for ~290 min, leaving room for the 2-min gap sleep + startup.
-          END=$((SECONDS + 290*60))
+          # Run ~280 min, leaving ~20 min buffer before the 300-min cap
+          # for the final graceful stop + backup below.
+          END=$((SECONDS + 280*60))
           while [ $SECONDS -lt $END ]; do
             sleep 60
+            mkdir -p "$DB_DIR"
             rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
             rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
             if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
@@ -134,11 +137,17 @@ jobs:
             fi
           done
 
-      - name: Final DB sync to Drive
+      - name: Stop panel and final backup to Drive (~15 min before cap)
         if: always()
         run: |
+          echo "Stopping panel for final backup..."
+          if [ -n "$PANEL_PID" ]; then kill "$PANEL_PID" 2>/dev/null || true; fi
+          pkill -f "$PANEL_START_CMD" 2>/dev/null || true
+          sleep 3
+          mkdir -p "$DB_DIR"
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
           rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
+          echo "Final backup complete. Next run will restore from Drive."
 
       - name: Upload logs
         if: always()
