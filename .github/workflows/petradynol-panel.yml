@@ -109,8 +109,8 @@ jobs:
         run: |
           FIXED_KEY="base64:$(printf 'pterodactyl-panel-fixed-key-32bytes!' | base64 -w0)"
           if [ -f /var/www/pterodactyl/.env ]; then
-            sed -i "s@^APP_KEY=.*@APP_KEY=$FIXED_KEY@" /var/www/pterodactyl/.env
-            cd /var/www/pterodactyl && php artisan config:clear || true
+            sudo sed -i "s@^APP_KEY=.*@APP_KEY=$FIXED_KEY@" /var/www/pterodactyl/.env
+            cd /var/www/pterodactyl && sudo -u www-data php artisan config:clear || true
           fi
           echo "APP_KEY set."
 
@@ -129,15 +129,15 @@ jobs:
 
       - name: Ensure services are running
         run: |
-          systemctl enable --now mariadb 2>/dev/null || true
-          systemctl enable --now redis-server 2>/dev/null || true
-          systemctl enable --now php8.3-fpm 2>/dev/null || true
-          systemctl enable --now nginx 2>/dev/null || true
-          systemctl enable --now cron 2>/dev/null || true
-          systemctl enable --now pteroq 2>/dev/null || true
+          sudo systemctl enable --now mariadb 2>/dev/null || true
+          sudo systemctl enable --now redis-server 2>/dev/null || true
+          sudo systemctl enable --now php8.3-fpm 2>/dev/null || true
+          sudo systemctl enable --now nginx 2>/dev/null || true
+          sudo systemctl enable --now cron 2>/dev/null || true
+          sudo systemctl enable --now pteroq 2>/dev/null || true
           sleep 5
           echo "Services status:"
-          systemctl is-active mariadb nginx php8.3-fpm redis-server 2>&1 || true
+          sudo systemctl is-active mariadb nginx php8.3-fpm redis-server 2>&1 || true
 
       - name: Expose panel via Cloudflare Tunnel (free public URL)
         run: |
