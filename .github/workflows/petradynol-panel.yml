@@ -156,23 +156,22 @@ jobs:
             sleep 2
           done
 
-      - name: Keep panel alive (sync DB to Drive every minute)
+            - name: Keep panel alive (health checks only)
         timeout-minutes: 280
         run: |
-          # Run ~280 min, leaving ~20 min buffer before the 300-min cap
-          # for the final graceful stop + backup below.
+          # Run ~280 min, leaving ~20 min buffer before the 300-min cap.
+          # We intentionally avoid syncing to Drive every minute because it causes
+          # service churn and unnecessary file I/O during the run.
           END=$((SECONDS + 280*60))
           while [ $SECONDS -lt $END ]; do
-            sleep 60
-            mkdir -p "$DB_DIR"
-            mariadb-dump -h 127.0.0.1 -P 3306 -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" > "$DB_DIR/panel.sql" 2>/dev/null || true
-            rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-            rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
-            if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
-              echo "Panel died; restarting services..."
+            if ! curl -fsS --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
+              echo "Panel health check failed; restarting web services..."
               systemctl restart nginx php8.3-fpm 2>/dev/null || true
               sleep 15
+            else
+              echo "Panel healthy."
             fi
+            sleep 300
           done
 
       - name: Stop services and final backup to Drive (~15 min before cap)
