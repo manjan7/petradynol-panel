@@ -1,33 +1,34 @@
 name: Petradynol Panel Keep-Alive
 
-# Installs and runs the Pterodactyl panel on a GitHub Actions runner,
-# using Google Drive to persist the MySQL database dump between the
-# 5-hour runs.
+# Auto-runs the Petradynol panel on a schedule, using Google Drive as the live DB.
+# Each run is hard-capped at 5 hours; the next queued run takes over ~2 minutes later.
 
 on:
   schedule:
+    # Every 5 hours at minute 2 (UTC).
     - cron: '2 */5 * * *'
   workflow_dispatch:
 
+# Never overlap two panel runs: a newly triggered run waits for the previous one
+# to finish, so the Drive DB is never written concurrently and the 2-minute
+# gap between stop and (re)start is preserved.
 concurrency:
-  group: petradynol-panel
-  cancel-in-progress: false
+  group: petradynol-panel-legacy
+  cancel-in-progress: true
 
 jobs:
   panel:
-    name: Run Pterodactyl Panel
+    name: Run Petradynol Panel
     runs-on: ubuntu-latest
+    # Strict 5-hour cap for every workflow run.
     timeout-minutes: 300
 
     env:
-      PANEL_PORT: 80
-      SERVER_HEALTH_URL: http://localhost/
+      PANEL_PORT: ${{ vars.PANEL_PORT || '3000' }}
+      PANEL_START_CMD: ${{ vars.PANEL_START_CMD || './petradynol-panel' }}
+      SERVER_HEALTH_URL: ${{ vars.SERVER_HEALTH_URL || 'http://localhost:3000/health' }}
       DRIVE_REMOTE: ${{ vars.DRIVE_REMOTE || 'gdrive:petradynol' }}
       DB_DIR: ${{ vars.DB_DIR || './data' }}
-      DB_NAME: panel
-      DB_USER: pterodactyl
-      DB_PASS: pterodactyl
-      APP_URL: http://localhost
 
     steps:
       - name: Checkout repository
@@ -53,97 +54,49 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           if [ -z "$RCLONE_CONFIG_B64" ]; then
-            echo "::error::RCLONE_CONFIG_B64 secret is required."
+            echo "::error::RCLONE_CONFIG_B64 secret is required. Generate with: rclone config -> then 'base64 -w0 ~/.config/rclone/rclone.conf'"
             exit 1
           fi
           echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
+      # 2-minute gap after the previous run stopped before starting a new one.
       - name: Wait 2 minutes (gap after previous run)
         run: sleep 120
 
-      - name: Check Drive for existing backup
+      - name: Pull live database from Drive
         run: |
           mkdir -p "$DB_DIR"
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-          if rclone ls "$DRIVE_REMOTE/db" 2>/dev/null | grep -q .; then
-            echo "BACKUP FOUND on Drive -> will restore after install."
-            echo "HAS_BACKUP=true" >> "$GITHUB_ENV"
+          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose --timeout 120s --contimeout 30s --retries 2
+
+      - name: Check if server is running
+        id: server_check
+        run: |
+          if curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
+            echo "running=true" >> "$GITHUB_OUTPUT"
+            echo "Server is already running."
           else
-            echo "NO BACKUP on Drive -> fresh install."
-            echo "HAS_BACKUP=false" >> "$GITHUB_ENV"
+            echo "running=false" >> "$GITHUB_OUTPUT"
+            echo "Server is NOT running; will (re)start."
           fi
 
-      - name: Pull database dump from Drive
+      - name: Start Petradynol panel + server
+        timeout-minutes: 2
         run: |
-          mkdir -p "$DB_DIR"
-          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose --timeout 120s --contimeout 30s --retries 2 || true
-          echo "DB_DIR contents:"
-          ls -la "$DB_DIR" || true
-
-      - name: Install Pterodactyl panel (non-interactive)
-        timeout-minutes: 30
-        env:
-          GITHUB_SOURCE: v1.4.0
-          SCRIPT_RELEASE: v1.4.0
-          FQDN: localhost
-          email: admin@example.com
-          user_email: admin@example.com
-          user_username: admin
-          user_firstname: Admin
-          user_lastname: User
-          user_password: adminpassword
-          MYSQL_DB: panel
-          MYSQL_USER: pterodactyl
-          MYSQL_PASSWORD: pterodactyl
-          ASSUME_SSL: "false"
-          CONFIGURE_LETSENCRYPT: "false"
-          CONFIGURE_FIREWALL: "false"
-          timezone: UTC
-          telemetry: "false"
-        run: |
-          # Download lib.sh then the panel installer
-          curl -fsSL -o /tmp/lib.sh "https://raw.githubusercontent.com/pterodactyl-installer/pterodactyl-installer/master/lib/lib.sh"
-          curl -fsSL -o /tmp/panel.sh "https://raw.githubusercontent.com/pterodactyl-installer/pterodactyl-installer/master/installers/panel.sh"
-          # Source lib.sh so panel.sh finds lib_loaded
-          # shellcheck disable=SC1091
-          source /tmp/lib.sh
-          # Run the panel installer non-interactively (env vars already set)
-          bash /tmp/panel.sh
-          echo "Pterodactyl panel installed."
-
-      - name: Fix APP_KEY (keep consistent across runs)
-        run: |
-          FIXED_KEY="base64:$(printf 'pterodactyl-panel-fixed-key-32bytes!' | base64 -w0)"
-          if [ -f /var/www/pterodactyl/.env ]; then
-            sed -i "s@^APP_KEY=.*@APP_KEY=$FIXED_KEY@" /var/www/pterodactyl/.env
-            cd /var/www/pterodactyl && php artisan config:clear || true
-          fi
-          echo "APP_KEY set."
-
-      - name: Restore database from dump (if backup exists)
-        run: |
-          if [ "$HAS_BACKUP" = "true" ] && [ -f "$DB_DIR/panel.sql" ]; then
-            echo "Restoring database from backup dump..."
-            for i in $(seq 1 30); do
-              if mariadb -h 127.0.0.1 -P 3306 -u"$DB_USER" -p"$DB_PASS" -e "SELECT 1" "$DB_NAME" >/dev/null 2>&1; then break; fi
-              sleep 2
-            done
-            mariadb -h 127.0.0.1 -P 3306 -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" < "$DB_DIR/panel.sql" && echo "Restore complete." || echo "Restore failed; using fresh DB."
+          if [ -f "$PANEL_START_CMD" ]; then
+            chmod +x "$PANEL_START_CMD"
           else
-            echo "No backup to restore; using fresh DB from install."
+            echo "WARNING: $PANEL_START_CMD not found; panel will not start. Set PANEL_START_CMD to your panel binary."
           fi
-
-      - name: Ensure services are running
-        run: |
-          systemctl enable --now mariadb 2>/dev/null || true
-          systemctl enable --now redis-server 2>/dev/null || true
-          systemctl enable --now php8.3-fpm 2>/dev/null || true
-          systemctl enable --now nginx 2>/dev/null || true
-          systemctl enable --now cron 2>/dev/null || true
-          systemctl enable --now pteroq 2>/dev/null || true
-          sleep 5
-          echo "Services status:"
-          systemctl is-active mariadb nginx php8.3-fpm redis-server 2>&1 || true
+          nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
+          echo "PANEL_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 12); do
+            if curl -sf --max-time 5 "$SERVER_HEALTH_URL" >/dev/null; then
+              echo "Panel is up."
+              break
+            fi
+            sleep 5
+          done
 
       - name: Expose panel via Cloudflare Tunnel (free public URL)
         run: |
@@ -160,37 +113,32 @@ jobs:
             fi
             sleep 2
           done
-          echo "Admin login: admin@example.com / adminpassword"
+          if [ -z "$URL" ]; then
+            echo "Tunnel URL not found yet; cloudflared.log:"
+            cat cloudflared.log || true
+          fi
 
       - name: Keep panel alive (sync DB to Drive every minute)
-        timeout-minutes: 280
+        timeout-minutes: 295
         run: |
-          # Run ~280 min, leaving ~20 min buffer before the 300-min cap
-          # for the final graceful stop + backup below.
-          END=$((SECONDS + 280*60))
+          # Run for ~290 min, leaving room for the 2-min gap sleep + startup.
+          END=$((SECONDS + 290*60))
           while [ $SECONDS -lt $END ]; do
             sleep 60
-            mkdir -p "$DB_DIR"
-            mariadb-dump -h 127.0.0.1 -P 3306 -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" > "$DB_DIR/panel.sql" 2>/dev/null || true
             rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
             rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
             if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
-              echo "Panel died; restarting services..."
-              systemctl restart nginx php8.3-fpm 2>/dev/null || true
+              echo "Server died; restarting panel..."
+              nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
               sleep 15
             fi
           done
 
-      - name: Stop services and final backup to Drive (~15 min before cap)
+      - name: Final DB sync to Drive
         if: always()
         run: |
-          echo "Dumping final database state..."
-          mkdir -p "$DB_DIR"
-          mariadb-dump -h 127.0.0.1 -P 3306 -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" > "$DB_DIR/panel.sql" 2>/dev/null || true
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
           rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
-          echo "Final backup complete. Next run will restore from Drive."
-          systemctl stop pteroq nginx php8.3-fpm mariadb redis-server 2>/dev/null || true
 
       - name: Upload logs
         if: always()
