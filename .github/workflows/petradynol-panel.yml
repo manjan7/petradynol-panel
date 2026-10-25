@@ -48,7 +48,7 @@ jobs:
 
       - name: Configure rclone (Google Drive)
         env:
-          RCLONE_CONFIG_B64: "W2dkcml2ZV0NCnR5cGUgPSBkcml2ZQ0Kc2NvcGUgPSBkcml2ZQ0KdG9rZW4gPSB7ImFjY2Vzc190b2tlbiI6InlhMjkuYTBBWDA3Q211Q3pLRGcxRzVzUnNuMjM3MGprUUhTNE56ZmNxZXYwdl94RFlGMi04azJwSWJmb1NwY3BXeXNCZTNaWUpuUlhId1Z4emtqa3piVExuNGRwQ3ZmdGVHRWFsMjhHNWlnU01RNElQZk5xcWVsXzBFN0YtX0lVS0R4Q3BSYnFLaUNlY0tnaGpubFhZb1ZmcUNLRzByMmYxR0o2WjFLNHFkU0tGVzBabW01RWtwcUtrNFJMTmRPNHNwYi1xTldDSWpGY2h3YUNnWUtBU0FTQVJJU0ZRSEdYMk1pS012aDQ4ZzBBRUQ4SVhPVHo3amF0QTAyMDYiLCJ0b2tlbl90eXBlIjoiQmVhcmVyIiwicmVmcmVzaF90b2tlbiI6IjEvLzA1TG1YQ3kta2E1UFNDZ1lJQVJBQUdBVVNOd0YtTDlJck9uT2QybkVqWjZvcF8xdlhla2Z5MGRNVlFxUkRpMFdkQWpmV2lEMEJiOVpYX1pNMDNRWDdmQXJvSl9KRVJVTmtKU3MiLCJleHBpcnkiOiIyMDI2LTEwLTI1VDA1OjE0OjQ2LjcwNDk0ODFaIiwiZXhwaXJlc19pbiI6MzU5OX0NCnRlYW1fZHJpdmUgPSANCg0K"
+          RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_B64 }}
         run: |
           mkdir -p ~/.config/rclone
           if [ -z "$RCLONE_CONFIG_B64" ]; then
@@ -156,7 +156,7 @@ jobs:
             sleep 2
           done
 
-            - name: Keep panel alive (health checks only)
+      - name: Keep panel alive (health checks only)
         timeout-minutes: 280
         run: |
           # Run ~280 min, leaving ~20 min buffer before the 300-min cap.
@@ -166,7 +166,10 @@ jobs:
           while [ $SECONDS -lt $END ]; do
             if ! curl -fsS --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
               echo "Panel health check failed; restarting web services..."
-              systemctl restart nginx php8.3-fpm 2>/dev/null || true
+              sudo systemctl status nginx php8.3-fpm --no-pager || true
+              sudo nginx -t || true
+              sudo php-fpm -t || true
+              sudo systemctl restart nginx php8.3-fpm || true
               sleep 15
             else
               echo "Panel healthy."
