@@ -42,6 +42,12 @@ jobs:
           curl -fsSL https://rclone.org/install.sh | sudo bash
           rclone version
 
+      - name: Install cloudflared (free tunnel)
+        run: |
+          curl -fsSL -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x /tmp/cloudflared
+          /tmp/cloudflared --version
+
       - name: Configure rclone (Google Drive)
         env:
           RCLONE_CONFIG_B64: "W2dkcml2ZV0NCnR5cGUgPSBkcml2ZQ0Kc2NvcGUgPSBkcml2ZQ0KdG9rZW4gPSB7ImFjY2Vzc190b2tlbiI6InlhMjkuYTBBWDA3Q211Q3pLRGcxRzVzUnNuMjM3MGprUUhTNE56ZmNxZXYwdl94RFlGMi04azJwSWJmb1NwY3BXeXNCZTNaWUpuUlhId1Z4emtqa3piVExuNGRwQ3ZmdGVHRWFsMjhHNWlnU01RNElQZk5xcWVsXzBFN0YtX0lVS0R4Q3BSYnFLaUNlY0tnaGpubFhZb1ZmcUNLRzByMmYxR0o2WjFLNHFkU0tGVzBabW01RWtwcUtrNFJMTmRPNHNwYi1xTldDSWpGY2h3YUNnWUtBU0FTQVJJU0ZRSEdYMk1pS012aDQ4ZzBBRUQ4SVhPVHo3amF0QTAyMDYiLCJ0b2tlbl90eXBlIjoiQmVhcmVyIiwicmVmcmVzaF90b2tlbiI6IjEvLzA1TG1YQ3kta2E1UFNDZ1lJQVJBQUdBVVNOd0YtTDlJck9uT2QybkVqWjZvcF8xdlhla2Z5MGRNVlFxUkRpMFdkQWpmV2lEMEJiOVpYX1pNMDNRWDdmQXJvSl9KRVJVTmtKU3MiLCJleHBpcnkiOiIyMDI2LTEwLTI1VDA1OjE0OjQ2LjcwNDk0ODFaIiwiZXhwaXJlc19pbiI6MzU5OX0NCnRlYW1fZHJpdmUgPSANCg0K"
@@ -86,6 +92,26 @@ jobs:
             fi
             sleep 5
           done
+
+      - name: Expose panel via Cloudflare Tunnel (free public URL)
+        run: |
+          nohup /tmp/cloudflared tunnel --url "http://localhost:${PANEL_PORT}" > cloudflared.log 2>&1 &
+          disown
+          for i in $(seq 1 30); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' cloudflared.log | head -n1)
+            if [ -n "$URL" ]; then
+              echo "=========================================="
+              echo "Public panel URL: $URL"
+              echo "=========================================="
+              echo "PANEL_PUBLIC_URL=$URL" >> "$GITHUB_ENV"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$URL" ]; then
+            echo "Tunnel URL not found yet; cloudflared.log:"
+            cat cloudflared.log || true
+          fi
 
       - name: Keep panel alive (sync DB to Drive every minute)
         run: |
