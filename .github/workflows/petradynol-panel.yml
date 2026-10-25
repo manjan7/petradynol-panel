@@ -14,7 +14,7 @@ on:
 # gap between stop and (re)start is preserved.
 concurrency:
   group: petradynol-panel
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   panel:
