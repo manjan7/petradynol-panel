@@ -48,7 +48,7 @@ jobs:
 
       - name: Configure rclone (Google Drive)
         env:
-          RCLONE_CONFIG_B64: "W3NlcnZlcmRiXQ0KdHlwZSA9IGRyaXZlDQpzY29wZSA9IGRyaXZlDQp0b2tlbiA9IHsiYWNjZXNzX3Rva2VuIjoieWEyOS5hMEFYMDdDbXVDektEZzFHNXNSc24yMzcwamtRSFM0TnpmY3FldjB2X3hEWUYyLThrMnBJYmZvU3BjcFd5c0JlM1pZSm5SWEh3Vnh6a2premJUTG40ZHBDdmZ0ZUdFYWwyOEc1aWdTTVE0SVBmTnFxZWxfMEU3Ri1fSVVLRHhDcFJicUtpQ2VjS2doam5sWFlvVmZxQ0tHMHIyZjFHSjZaMUs0cWRTS0ZXMFptbTVFa3BxS2s0UkxOZE80c3BiLXFOV0NJakZjaHdhQ2dZS0FTQVNBUklTRlFIR1gyTWlLTXZoNDhnMEFFRDhJWE9UejdqYXRBMDIwNiIsInRva2VuX3R5cGUiOiJCZWFyZXIiLCJyZWZyZXNoX3Rva2VuIjoiMS8vMDVMbVhDeS1rYTVQU0NnWUlBUkFBR0FVU053Ri1MOUlyT25PZDJuRWpaNm9wXzF2WGVrZnkwZE1WUXFSRGkwV2RBamZXaUQwQmI5WlhfWk0wM1FYN2ZBcm9KX0pFUlVOa0pTcyIsImV4cGlyeSI6IjIwMjYtMTAtMjVUMDU6MTQ6NDYuNzA0OTQ4MVoiLCJleHBpcmVzX2luIjozNTk5fQ0KdGVhbV9kcml2ZSA9IA0KDQo="
+          RCLONE_CONFIG_B64: ${{ secrets.RCLONE_CONFIG_B64 }}
         run: |
           mkdir -p ~/.config/rclone
           if [ -z "$RCLONE_CONFIG_B64" ]; then
@@ -98,7 +98,6 @@ jobs:
           timezone: UTC
           telemetry: "false"
         run: |
-          # Download and run the standalone non-interactive installer
           curl -fsSL -o /tmp/install-petradynol-panel.sh \
             https://raw.githubusercontent.com/manjan7/petradynol-panel/main/install-petradynol-panel.sh
           chmod +x /tmp/install-petradynol-panel.sh
@@ -144,7 +143,7 @@ jobs:
           nohup /tmp/cloudflared tunnel --url "http://localhost:${PANEL_PORT}" > cloudflared.log 2>&1 &
           disown
           for i in $(seq 1 30); do
-            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' cloudflared.log | head -n1)
+            URL=$(grep -oE 'https://[a-z0-9-]+\\.trycloudflare\\.com' cloudflared.log | head -n1)
             if [ -n "$URL" ]; then
               echo "=========================================="
               echo "Public panel URL: $URL"
@@ -156,6 +155,21 @@ jobs:
             sleep 2
           done
 
+      - name: Debug panel status before keepalive
+        run: |
+          echo "=== HTTP HEAD ==="
+          curl -I --max-time 20 http://localhost/ || true
+          echo "=== nginx status ==="
+          sudo systemctl status nginx php8.3-fpm --no-pager || true
+          echo "=== nginx error log ==="
+          sudo tail -n 100 /var/log/nginx/error.log || true
+          echo "=== php-fpm error log ==="
+          sudo tail -n 100 /var/log/php8.3-fpm/error.log || true
+          if [ -f /var/www/pterodactyl/artisan ]; then
+            echo "=== Laravel status ==="
+            sudo -u www-data php /var/www/pterodactyl/artisan up || true
+          fi
+
       - name: Keep panel alive (health checks only)
         timeout-minutes: 280
         run: |
@@ -164,15 +178,18 @@ jobs:
           # service churn and unnecessary file I/O during the run.
           END=$((SECONDS + 280*60))
           while [ $SECONDS -lt $END ]; do
-            if ! curl -fsS --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
-              echo "Panel health check failed; restarting web services..."
+            if curl -fsS --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
+              echo "Panel healthy."
+            else
+              echo "Panel health check failed; dumping service state before restart..."
               sudo systemctl status nginx php8.3-fpm --no-pager || true
-              sudo nginx -t || true
-              sudo php-fpm -t || true
+              sudo tail -n 100 /var/log/nginx/error.log || true
+              sudo tail -n 100 /var/log/php8.3-fpm/error.log || true
+              if [ -f /var/www/pterodactyl/artisan ]; then
+                sudo -u www-data php /var/www/pterodactyl/artisan config:clear || true
+              fi
               sudo systemctl restart nginx php8.3-fpm || true
               sleep 15
-            else
-              echo "Panel healthy."
             fi
             sleep 300
           done
