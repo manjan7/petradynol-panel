@@ -81,11 +81,16 @@ jobs:
           fi
 
       - name: Start Petradynol panel + server
+        timeout-minutes: 2
         run: |
-          if [ -f "$PANEL_START_CMD" ]; then chmod +x "$PANEL_START_CMD"; fi
+          if [ -f "$PANEL_START_CMD" ]; then
+            chmod +x "$PANEL_START_CMD"
+          else
+            echo "WARNING: $PANEL_START_CMD not found; panel will not start. Set PANEL_START_CMD to your panel binary."
+          fi
           nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
           echo "PANEL_PID=$!" >> "$GITHUB_ENV"
-          for i in $(seq 1 60); do
+          for i in $(seq 1 12); do
             if curl -sf --max-time 5 "$SERVER_HEALTH_URL" >/dev/null; then
               echo "Panel is up."
               break
@@ -114,6 +119,7 @@ jobs:
           fi
 
       - name: Keep panel alive (sync DB to Drive every minute)
+        timeout-minutes: 295
         run: |
           # Run for ~290 min, leaving room for the 2-min gap sleep + startup.
           END=$((SECONDS + 290*60))
