@@ -141,5 +141,6 @@ jobs:
           name: petradynol-logs-${{ github.run_id }}
           path: |
             panel.log
+            cloudflared.log
           if-no-files-found: ignore
           retention-days: 3
