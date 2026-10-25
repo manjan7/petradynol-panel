@@ -13,8 +13,8 @@ on:
 # to finish, so the Drive DB is never written concurrently and the 2-minute
 # gap between stop and (re)start is preserved.
 concurrency:
-  group: petradynol-panel
-  cancel-in-progress: false
+  group: petradynol-panel-v3
+  cancel-in-progress: true
 
 jobs:
   panel:
