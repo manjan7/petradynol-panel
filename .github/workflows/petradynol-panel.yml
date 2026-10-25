@@ -67,7 +67,7 @@ jobs:
         run: |
           mkdir -p "$DB_DIR"
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose
+          rclone sync "$DRIVE_REMOTE/db" "$DB_DIR" --verbose --timeout 120s --contimeout 30s --retries 2
 
       - name: Check if server is running
         id: server_check
@@ -126,7 +126,7 @@ jobs:
           while [ $SECONDS -lt $END ]; do
             sleep 60
             rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-            rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
+            rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
             if ! curl -sf --max-time 10 "$SERVER_HEALTH_URL" >/dev/null; then
               echo "Server died; restarting panel..."
               nohup bash -c "$PANEL_START_CMD" > panel.log 2>&1 &
@@ -138,7 +138,7 @@ jobs:
         if: always()
         run: |
           rclone mkdir "$DRIVE_REMOTE/db" 2>/dev/null || true
-          rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose || true
+          rclone sync "$DB_DIR" "$DRIVE_REMOTE/db" --verbose --timeout 120s --contimeout 30s --retries 2 || true
 
       - name: Upload logs
         if: always()
