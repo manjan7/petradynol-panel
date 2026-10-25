@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: petradynol-panel-test3
-  cancel-in-progress: true
+  group: petradynol-panel
+  cancel-in-progress: false
 
 jobs:
   panel:
